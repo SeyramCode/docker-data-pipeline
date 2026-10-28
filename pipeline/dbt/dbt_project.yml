@@ -1,0 +1,16 @@
+name: warehouse
+version: "1.0.0"
+config-version: 2
+profile: warehouse
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+
+models:
+  warehouse:
+    staging:
+      +schema: staging
+      +materialized: view
+    marts:
+      +schema: marts
+      +materialized: table

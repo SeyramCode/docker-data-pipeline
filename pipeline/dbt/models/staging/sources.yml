@@ -1,0 +1,9 @@
+version: 2
+
+# Example source tables. Replace with the tables listed in config/tables.yml.
+sources:
+  - name: raw
+    schema: raw
+    tables:
+      - name: customers
+      - name: orders

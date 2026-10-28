@@ -1,0 +1,115 @@
+# Batch pipeline: (your MySQL) -> Spark -> Delta Lake -> Postgres -> dbt -> (your Superset)
+# MySQL and Superset are NOT part of this stack; point to them via .env.
+
+name: batch-pipeline
+
+x-pipeline-env: &pipeline-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
+  AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+  AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
+  AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+  # Source (external)
+  MYSQL_HOST: ${MYSQL_HOST}
+  MYSQL_PORT: ${MYSQL_PORT:-3306}
+  MYSQL_DATABASE: ${MYSQL_DATABASE}
+  MYSQL_USER: ${MYSQL_USER}
+  MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+  MYSQL_JDBC_PARAMS: ${MYSQL_JDBC_PARAMS:-}
+  # Warehouse (in this stack)
+  WAREHOUSE_HOST: postgres
+  WAREHOUSE_PORT: "5432"
+  WAREHOUSE_DB: warehouse
+  POSTGRES_USER: ${POSTGRES_USER}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  # Pipeline tuning
+  PIPELINE_SCHEDULE: ${PIPELINE_SCHEDULE:-@daily}
+  SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY:-2g}
+
+x-pipeline-common: &pipeline-common
+  image: ${PIPELINE_IMAGE:-batch-pipeline:latest}
+  build: .
+  environment: *pipeline-env
+  volumes:
+    - lake:/opt/lake
+    - airflow-logs:/opt/airflow/logs
+    # Live-edit DAGs, Spark jobs, table config and dbt models without rebuilding.
+    # Remove this line to run purely from the code baked into the image.
+    - ./pipeline:/opt/pipeline:ro
+  # Lets containers reach services on the Docker host (e.g. your MySQL) on
+  # Linux, macOS and Windows alike.
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
+      SUPERSET_RO_PASSWORD: ${SUPERSET_RO_PASSWORD}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      # Superset connects here (read-only user: superset_ro, schema: marts).
+      - "${WAREHOUSE_HOST_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  airflow-init:
+    <<: *pipeline-common
+    command: version
+    environment:
+      <<: *pipeline-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  airflow-webserver:
+    <<: *pipeline-common
+    command: webserver
+    restart: unless-stopped
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  # Tasks (Spark in local mode + dbt) run inside the scheduler via LocalExecutor.
+  airflow-scheduler:
+    <<: *pipeline-common
+    command: scheduler
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  pg-data:
+  lake:
+  airflow-logs:

@@ -1,0 +1,25 @@
+# Tables to pull from the source MySQL database.
+# Full guide: docs/Batch_Pipeline_Documentation.pdf (section 6 covers this file).
+#
+#   name               lake + warehouse table name (lowercase letters, digits, _)
+#   source             MySQL table name, if different from `name`
+#   primary_key        column (or list) used to deduplicate in silver
+#   incremental_column optional; only rows with value >= last loaded value are pulled
+#   columns            optional; subset of columns to extract (default: all)
+
+tables:
+  - name: customers
+    primary_key: id
+    incremental_column: updated_at
+
+  - name: orders
+    primary_key: id
+    incremental_column: updated_at
+
+# ERPNext / Frappe example (doctype tables have spaces, pk `name`, `modified` timestamp):
+#
+#  - name: sales_invoice
+#    source: "tabSales Invoice"
+#    primary_key: name
+#    incremental_column: modified
+#    columns: [name, customer, posting_date, grand_total, status, docstatus, modified]
